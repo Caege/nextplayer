@@ -2,10 +2,12 @@ package dev.anilbeesetti.nextplayer.feature.player.service
 
 import android.app.PendingIntent
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.AudioAttributes
@@ -20,8 +22,14 @@ import androidx.media3.common.Player.DISCONTINUITY_REASON_SEEK
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.session.CommandButton
 import androidx.media3.session.CommandButton.ICON_UNDEFINED
@@ -46,6 +54,7 @@ import dev.anilbeesetti.nextplayer.core.model.DecoderPriority
 import dev.anilbeesetti.nextplayer.core.model.LoopMode
 import dev.anilbeesetti.nextplayer.core.model.PlayerPreferences
 import dev.anilbeesetti.nextplayer.core.model.Resume
+import dev.anilbeesetti.nextplayer.feature.player.HeaderStore
 import dev.anilbeesetti.nextplayer.core.ui.R as coreUiR
 import dev.anilbeesetti.nextplayer.feature.player.PlayerActivity
 import dev.anilbeesetti.nextplayer.feature.player.R
@@ -80,6 +89,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 
+
+private const val MEDIA_METADATA_HTTP_HEADERS = "media_metadata_http_headers"
 @OptIn(UnstableApi::class)
 @AndroidEntryPoint
 class PlayerService : MediaSessionService() {
@@ -106,6 +117,10 @@ class PlayerService : MediaSessionService() {
 
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var currentVolumeGain: Int = 0
+
+
+    // Define this at the top of PlayerService.kt or in a Companion Object
+
 
     private val playbackStateListener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -137,7 +152,7 @@ class PlayerService : MediaSessionService() {
             when (reason) {
                 DISCONTINUITY_REASON_SEEK,
                 DISCONTINUITY_REASON_AUTO_TRANSITION,
-                -> {
+                    -> {
                     if (newPosition.mediaItem == null || oldMediaItem == newPosition.mediaItem) return
 
                     val updatedPosition = oldPosition.positionMs.takeIf { reason == DISCONTINUITY_REASON_SEEK } ?: C.TIME_UNSET
@@ -280,7 +295,7 @@ class PlayerService : MediaSessionService() {
             // Update the media metadata duration so that it will be used later in position discontinuity handling
             player.replaceMediaItem(
                 player.currentMediaItemIndex,
-                currentMediaItem.copy(durationMs = player.duration.coerceAtLeast(0))
+                currentMediaItem.copy(durationMs = player.duration.coerceAtLeast(0)),
             )
         }
 
@@ -521,6 +536,88 @@ class PlayerService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
+
+
+
+
+//    private inner class HeaderDataSourceFactory(
+//        private val context: Context
+//    ) : DataSource.Factory {
+//        override fun createDataSource(): DataSource {
+//            // Create the base HTTP source
+//            val baseHttpDataSourceFactory = DefaultHttpDataSource.Factory()
+//                .setAllowCrossProtocolRedirects(true)
+//
+//            // Use 'object : DataSource' to properly implement the interface
+//            val headerInterceptor = object : DataSource {
+//                private val httpDataSource = baseHttpDataSourceFactory.createDataSource()
+//
+//                override fun addTransferListener(transferListener: TransferListener) {
+//                    httpDataSource.addTransferListener(transferListener)
+//                }
+//
+//                override fun open(dataSpec: DataSpec): Long {
+//                    // Retrieve the header string from the dataSpec's customData (the tag)
+//                    Log.d("shit", "dataSpec:${dataSpec}")
+//                    val headerString = dataSpec.customData as? String
+//                   if(headerString != null) {
+//                       Log.d("shit", headerString)
+//
+//                   }
+//
+//                    if (!headerString.isNullOrEmpty()) {
+//                        headerString.split(",").forEach { pair ->
+//                            val parts = pair.split(":", limit = 2)
+//                            if (parts.size == 2) {
+//                                httpDataSource.setRequestProperty(parts[0].trim(), parts[1].trim())
+//                            }
+//                        }
+//                    }
+//                    return httpDataSource.open(dataSpec)
+//                }
+//
+//                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+//                    return httpDataSource.read(buffer, offset, length)
+//                }
+//
+//                override fun getUri(): Uri? = httpDataSource.uri
+//
+//                override fun close() {
+//                    httpDataSource.close()
+//                }
+//            }
+//
+//            // Wrap in DefaultDataSource to handle content:// and file:// protocols safely
+//            return DefaultDataSource(context, headerInterceptor)
+//        }
+//    }
+
+    class HeaderDataSourceFactory(
+        private val context: Context
+    ) : DataSource.Factory {
+
+        private val baseFactory = DefaultDataSource.Factory(context)
+
+        override fun createDataSource(): DataSource {
+            val base = baseFactory.createDataSource()
+
+            return object : DataSource by base {
+
+                override fun open(dataSpec: DataSpec): Long {
+                    val uri = dataSpec.uri
+                    val headers = HeaderStore.headers
+
+                    if ((uri.scheme == "http" || uri.scheme == "https") && headers.isNotEmpty()) {
+                        val newSpec = dataSpec.withRequestHeaders(headers)
+                        return base.open(newSpec)
+                    }
+
+                    return base.open(dataSpec)
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         val renderersFactory = NextRenderersFactory(applicationContext)
@@ -544,6 +641,10 @@ class PlayerService : MediaSessionService() {
         val player = ExoPlayer.Builder(applicationContext)
             .setRenderersFactory(renderersFactory)
             .setTrackSelector(trackSelector)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(applicationContext)
+                    .setDataSourceFactory(HeaderDataSourceFactory( applicationContext))
+            )
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -562,6 +663,31 @@ class PlayerService : MediaSessionService() {
                     LoopMode.ALL -> Player.REPEAT_MODE_ALL
                 }
             }
+
+
+        //clear when playback is ready
+//        var headersCleared = false
+//
+//        player.addListener(object : Player.Listener {
+//            override fun onPlaybackStateChanged(state: Int) {
+//                if (state == Player.STATE_READY && !headersCleared) {
+//                    HeaderStore.headers = emptyMap()
+//                    headersCleared = true
+//                }
+//            }
+//        })
+
+
+
+        var headersCleared = false
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    HeaderStore.headers = emptyMap()
+                }
+            }
+        })
 
         try {
             mediaSession = MediaSession.Builder(this, player).apply {
@@ -619,6 +745,9 @@ class PlayerService : MediaSessionService() {
     ): List<MediaItem> = supervisorScope {
         mediaItems.map { mediaItem ->
             async {
+                //get http_headers i added in media controller
+                val httpHeaders = mediaItem.mediaMetadata.extras?.getString("http_headers") // Get the raw string
+
                 val uri = mediaItem.mediaId.toUri()
                 val video = mediaRepository.getVideoByUri(uri = mediaItem.mediaId)
                 val videoState = mediaRepository.getVideoState(uri = mediaItem.mediaId)
@@ -665,6 +794,7 @@ class PlayerService : MediaSessionService() {
                                 subtitleTrackIndex = subtitleTrackIndex,
                                 subtitleDelayMilliseconds = subtitleDelay,
                                 subtitleSpeed = subtitleSpeed,
+                                httpHeaders = httpHeaders,
                             )
                         }.build(),
                     )
@@ -672,7 +802,7 @@ class PlayerService : MediaSessionService() {
             }
         }.awaitAll()
     }
-    
+
     private fun getDefaultArtworkUri(): Uri = Uri.Builder().apply {
         val defaultArtwork = R.drawable.artwork_default
         scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
@@ -700,6 +830,7 @@ class PlayerService : MediaSessionService() {
             )
         }
     }
+
     private suspend fun loadArtworkForMediaItem(mediaItem: MediaItem): Uri? = withContext(Dispatchers.IO) {
         val uri = mediaItem.mediaId.toUri()
         return@withContext try {
@@ -716,6 +847,7 @@ class PlayerService : MediaSessionService() {
             null
         }
     }
+
     private fun MediaItem.withArtwork(uri: Uri): MediaItem = buildUpon()
         .setMediaMetadata(
             mediaMetadata.buildUpon()

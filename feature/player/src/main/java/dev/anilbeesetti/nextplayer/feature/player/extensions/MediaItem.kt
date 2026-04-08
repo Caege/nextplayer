@@ -12,6 +12,8 @@ private const val MEDIA_METADATA_VIDEO_ZOOM_KEY = "media_metadata_video_zoom"
 private const val MEDIA_METADATA_SUBTITLE_DELAY_KEY = "media_metadata_subtitle_delay"
 private const val MEDIA_METADATA_SUBTITLE_SPEED_KEY = "media_metadata_subtitle_speed"
 
+private const val MEDIA_METADATA_HTTP_HEADERS =    "media_metadata_http_headers"
+
 private fun Bundle.setExtras(
     positionMs: Long?,
     videoScale: Float?,
@@ -20,6 +22,7 @@ private fun Bundle.setExtras(
     subtitleTrackIndex: Int?,
     subtitleDelayMilliseconds: Long? = null,
     subtitleSpeed: Float? = null,
+    httpHeaders: String?
 ) = apply {
     positionMs?.let { putLong(MEDIA_METADATA_POSITION_KEY, it) }
     videoScale?.let { putFloat(MEDIA_METADATA_VIDEO_ZOOM_KEY, it) }
@@ -28,6 +31,7 @@ private fun Bundle.setExtras(
     subtitleTrackIndex?.let { putInt(MEDIA_METADATA_SUBTITLE_TRACK_INDEX_KEY, it) }
     subtitleDelayMilliseconds?.let { putLong(MEDIA_METADATA_SUBTITLE_DELAY_KEY, it) }
     subtitleSpeed?.let { putFloat(MEDIA_METADATA_SUBTITLE_SPEED_KEY, it) }
+    httpHeaders?.let {putString(MEDIA_METADATA_HTTP_HEADERS, it)}
 }
 
 fun MediaMetadata.Builder.setExtras(
@@ -38,6 +42,7 @@ fun MediaMetadata.Builder.setExtras(
     subtitleTrackIndex: Int? = null,
     subtitleDelayMilliseconds: Long? = null,
     subtitleSpeed: Float? = null,
+    httpHeaders: String? = null
 ): MediaMetadata.Builder = setExtras(
     Bundle().setExtras(
         positionMs = positionMs,
@@ -47,6 +52,7 @@ fun MediaMetadata.Builder.setExtras(
         subtitleTrackIndex = subtitleTrackIndex,
         subtitleDelayMilliseconds = subtitleDelayMilliseconds,
         subtitleSpeed = subtitleSpeed,
+        httpHeaders = httpHeaders
     ),
 )
 
@@ -92,6 +98,12 @@ val MediaMetadata.subtitleSpeed: Float?
             .takeIf { containsKey(MEDIA_METADATA_SUBTITLE_SPEED_KEY) }
     }
 
+// my custom http header
+val MediaMetadata.httpHeaders : String?
+    get() = extras?.run {
+        getString(MEDIA_METADATA_HTTP_HEADERS).takeIf { containsKey(MEDIA_METADATA_HTTP_HEADERS) }
+    }
+
 fun MediaItem.copy(
     positionMs: Long? = this.mediaMetadata.positionMs,
     durationMs: Long? = this.mediaMetadata.durationMs,
@@ -101,6 +113,7 @@ fun MediaItem.copy(
     subtitleTrackIndex: Int? = this.mediaMetadata.subtitleTrackIndex,
     subtitleDelayMilliseconds: Long? = this.mediaMetadata.subtitleDelayMilliseconds,
     subtitleSpeed: Float? = this.mediaMetadata.subtitleSpeed,
+    httpHeaders: String? = this.mediaMetadata.httpHeaders
 ): MediaItem = buildUpon().setMediaMetadata(
     mediaMetadata.buildUpon()
         .setDurationMs(durationMs)
@@ -113,6 +126,7 @@ fun MediaItem.copy(
                 subtitleTrackIndex = subtitleTrackIndex,
                 subtitleDelayMilliseconds = subtitleDelayMilliseconds,
                 subtitleSpeed = subtitleSpeed,
+                httpHeaders = httpHeaders
             ),
         ).build(),
 ).build()

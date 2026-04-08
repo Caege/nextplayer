@@ -13,23 +13,37 @@ import dev.anilbeesetti.nextplayer.core.common.extensions.convertToUTF8
 import dev.anilbeesetti.nextplayer.core.common.extensions.getFilenameFromUri
 import java.nio.charset.Charset
 
-fun Uri.getSubtitleMime(): String {
+
+// lmao your path might not end with file format, ninja
+//fun Uri.getSubtitleMime(): String {
+//    return when {
+//        path?.endsWith(".ssa") == true || path?.endsWith(".ass") == true -> {
+//            MimeTypes.TEXT_SSA
+//        }
+//
+//        path?.endsWith(".vtt") == true -> {
+//            MimeTypes.TEXT_VTT
+//        }
+//
+//        path?.endsWith(".ttml") == true || path?.endsWith(".xml") == true || path?.endsWith(".dfxp") == true -> {
+//            MimeTypes.APPLICATION_TTML
+//        }
+//
+//        else -> {
+//            MimeTypes.APPLICATION_SUBRIP
+//        }
+//    }
+//}
+
+fun Uri.getSubtitleMime(context: Context): String {
+    val name = context.getFilenameFromUri(this)?.lowercase() ?: return MimeTypes.TEXT_VTT
+
     return when {
-        path?.endsWith(".ssa") == true || path?.endsWith(".ass") == true -> {
-            MimeTypes.TEXT_SSA
-        }
-
-        path?.endsWith(".vtt") == true -> {
-            MimeTypes.TEXT_VTT
-        }
-
-        path?.endsWith(".ttml") == true || path?.endsWith(".xml") == true || path?.endsWith(".dfxp") == true -> {
-            MimeTypes.APPLICATION_TTML
-        }
-
-        else -> {
-            MimeTypes.APPLICATION_SUBRIP
-        }
+        name.endsWith(".ssa") || name.endsWith(".ass") -> MimeTypes.TEXT_SSA
+        name.endsWith(".vtt") -> MimeTypes.TEXT_VTT
+        name.endsWith(".ttml") || name.endsWith(".xml") || name.endsWith(".dfxp") -> MimeTypes.APPLICATION_TTML
+        name.endsWith(".srt") -> MimeTypes.APPLICATION_SUBRIP
+        else -> MimeTypes.TEXT_VTT // 🔥 important fallback
     }
 }
 
@@ -47,7 +61,7 @@ suspend fun Context.uriToSubtitleConfiguration(
         null
     }
     val label = getFilenameFromUri(uri)
-    val mimeType = uri.getSubtitleMime()
+    val mimeType = uri.getSubtitleMime(this)
     val utf8ConvertedUri = convertToUTF8(uri = uri, charset = charset)
     return MediaItem.SubtitleConfiguration.Builder(utf8ConvertedUri).apply {
         setId(uri.toString())

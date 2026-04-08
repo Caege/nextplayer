@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -28,7 +29,10 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.UnrecognizedInputFormatException
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
@@ -47,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.lang.System.console
 
 val LocalUseMaterialYouControls = compositionLocalOf { false }
 
@@ -76,6 +81,10 @@ class PlayerActivity : ComponentActivity() {
     private val playbackStateListener: Player.Listener = playbackStateListener()
 
     private val subtitleFileSuspendLauncher = registerForSuspendActivityResult(OpenDocument())
+
+    //fallback retrys
+    private var hasRetried = false
+    private var lastTriedAsHls = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -117,6 +126,8 @@ class PlayerActivity : ComponentActivity() {
                                         MimeTypes.BASE_TYPE_TEXT + "/*",
                                     ),
                                 ) ?: return@launch
+
+                                Log.d("sub", "picked sub : ${uri}")
                                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 maybeInitControllerFuture()
                                 controllerFuture?.await()?.addSubtitleTrack(uri)
@@ -173,6 +184,8 @@ class PlayerActivity : ComponentActivity() {
         super.onStop()
     }
 
+
+
     private fun maybeInitControllerFuture() {
         if (controllerFuture == null) {
             val sessionToken = SessionToken(applicationContext, ComponentName(applicationContext, PlayerService::class.java))
@@ -182,6 +195,14 @@ class PlayerActivity : ComponentActivity() {
 
     private fun startPlayback() {
         val uri = intent.data ?: return
+        val headerString = intent?.getStringExtra("headers")
+
+
+        HeaderStore.headers = parseHeaders(headerString)
+        if(headerString != null) {
+            Log.d("shit", headerString)
+        }
+
 
         val returningFromBackground = !isIntentNew && mediaController?.currentMediaItem != null
         val isNewUriTheCurrentMediaItem = mediaController?.currentMediaItem?.localConfiguration?.uri.toString() == uri.toString()
@@ -195,11 +216,51 @@ class PlayerActivity : ComponentActivity() {
         isIntentNew = false
 
         lifecycleScope.launch {
+            if(!headerString.isNullOrEmpty()) {
+                Log.d("shit", "launching our custom player")
+                playVideo(uri, headerString)
+            }
             playVideo(uri)
         }
     }
 
+
+    private fun parseHeaders(headerString: String?): Map<String, String> {
+        if (headerString.isNullOrEmpty()) return emptyMap()
+
+        return headerString.split(";")
+            .mapNotNull {
+                val parts = it.split("=", limit = 2)
+                if (parts.size == 2) parts[0].trim() to parts[1].trim() else null
+            }
+            .toMap()
+    }
+
     private suspend fun playVideo(uri: Uri) = withContext(Dispatchers.Default) {
+
+        suspend fun detectMimeType(url: String): String? = withContext(Dispatchers.IO) {
+            try {
+                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "HEAD"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                connection.connect()
+
+                connection.contentType
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val mime = detectMimeType(uri.toString())
+
+        val uriString = uri.toString()
+
+        // my proxy = HLS
+        val shouldStartAsHls = uriString.contains("/api/playlist")
+
+        lastTriedAsHls = shouldStartAsHls
+        hasRetried = false
+
         val mediaContentUri = getMediaContentUri(uri)
         val playlist = playerApi.getPlaylist().takeIf { it.isNotEmpty() }
             ?: mediaContentUri?.let { mediaUri ->
@@ -221,6 +282,11 @@ class PlayerActivity : ComponentActivity() {
             MediaItem.Builder().apply {
                 setUri(uri)
                 setMediaId(uri)
+
+                // Only force for initial attempt
+                if (lastTriedAsHls && index == mediaItemIndexToPlay) {
+                    setMimeType(MimeTypes.APPLICATION_M3U8)
+                }
                 if (index == mediaItemIndexToPlay) {
                     setMediaMetadata(
                         MediaMetadata.Builder().apply {
@@ -249,7 +315,149 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+//overloaded version , so it doesn't crash and burns
+    private suspend fun playVideo(uri: Uri, headerString: String?) = withContext(Dispatchers.Default) {
+        Log.d("shit", "headers in player : ${headerString}")
+    val headers = parseHeaders(headerString)
+    val hasHeaders = headers.isNotEmpty()
+//    val dataSourceFactory = if (hasHeaders) {
+//        DefaultHttpDataSource.Factory()
+//            .setAllowCrossProtocolRedirects(true)
+//            .setDefaultRequestProperties(headers)
+//    } else {
+//        null
+//    }
+
+        suspend fun detectMimeType(url: String): String? = withContext(Dispatchers.IO) {
+            try {
+                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "HEAD"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                connection.connect()
+
+                connection.contentType
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val mime = detectMimeType(uri.toString())
+
+        val uriString = uri.toString()
+
+        // my proxy = HLS
+        val shouldStartAsHls = uriString.contains("/api/playlist")
+
+        lastTriedAsHls = shouldStartAsHls
+        hasRetried = false
+
+        val mediaContentUri = getMediaContentUri(uri)
+        val playlist = playerApi.getPlaylist().takeIf { it.isNotEmpty() }
+            ?: mediaContentUri?.let { mediaUri ->
+                viewModel.getPlaylistFromUri(mediaUri)
+                    .map { it.uriString }
+                    .toMutableList()
+                    .apply {
+                        if (!contains(mediaUri.toString())) {
+                            add(index = 0, element = mediaUri.toString())
+                        }
+                    }
+            } ?: listOf(uri.toString())
+
+        val mediaItemIndexToPlay = playlist.indexOfFirst {
+            it == (mediaContentUri ?: uri).toString()
+        }.takeIf { it >= 0 } ?: 0
+
+        val mediaItems = playlist.mapIndexed { index, uri ->
+            MediaItem.Builder().apply {
+                setUri(uri)
+                setMediaId(uri)
+
+// custom shit
+                    .setTag(headerString)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setExtras(Bundle().apply {
+                                putString("http_headers", headerString)
+                            })
+                            .build()
+                    )
+//------------
+                // Only force for initial attempt
+                if (lastTriedAsHls && index == mediaItemIndexToPlay) {
+                    setMimeType(MimeTypes.APPLICATION_M3U8)
+                }
+                if (index == mediaItemIndexToPlay) {
+                    setMediaMetadata(
+                        MediaMetadata.Builder().apply {
+                            setTitle(playerApi.title)
+                            setExtras(positionMs = playerApi.position?.toLong())
+                        }.build(),
+                    )
+                    val apiSubs = playerApi.getSubs().map { subtitle ->
+                        uriToSubtitleConfiguration(
+                            uri = subtitle.uri,
+                            subtitleEncoding = playerPreferences?.subtitleTextEncoding ?: "",
+                            isSelected = subtitle.isSelected,
+                        )
+                    }
+                    setSubtitleConfigurations(apiSubs)
+                }
+            }.build()
+        }
+
+        withContext(Dispatchers.Main) {
+            mediaController?.run {
+                setMediaItems(mediaItems, mediaItemIndexToPlay, playerApi.position?.toLong() ?: C.TIME_UNSET)
+                playWhenReady = viewModel.playWhenReady
+                prepare()
+            }
+        }
+    }
+
+
     private fun playbackStateListener() = object : Player.Listener {
+
+        private suspend fun retryWithOppositeStrategy(uri: Uri) {
+            val uriString = uri.toString()
+
+            // 🔄 flip strategy
+            lastTriedAsHls = !lastTriedAsHls
+
+            val mediaItem = MediaItem.Builder().apply {
+                setUri(uri)
+                setMediaId(uriString)
+
+                if (lastTriedAsHls) {
+                    setMimeType(MimeTypes.APPLICATION_M3U8)
+                }
+            }.build()
+
+            withContext(Dispatchers.Main) {
+                mediaController?.run {
+                    setMediaItem(mediaItem)
+                    prepare()
+                    playWhenReady = true
+                }
+            }
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            super.onPlayerError(error)
+
+            val cause = error.cause
+            val currentUri = mediaController?.currentMediaItem?.localConfiguration?.uri
+                ?: return
+
+            // 🔥 Only retry once
+            if (!hasRetried && cause is UnrecognizedInputFormatException) {
+                hasRetried = true
+
+                lifecycleScope.launch {
+                    retryWithOppositeStrategy(currentUri)
+                }
+            }
+        }
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             super.onMediaItemTransition(mediaItem, reason)
             intent.data = mediaItem?.localConfiguration?.uri
